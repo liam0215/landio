@@ -21,7 +21,7 @@ pub fn start_trail_system(
             // Check if the current tile is part of the player's territory
             let mut on_own_territory = false;
 
-            for (_tile_entity, mut tile, mut sprite) in tile_query.iter_mut() {
+            for (tile_entity, mut tile, mut sprite) in tile_query.iter_mut() {
                 if tile.x == current_x && tile.y == current_y {
                     // If tile is owned by this player but is not a trail
                     if tile.owner == Some(player_entity) && !tile.is_trail {
@@ -32,7 +32,9 @@ pub fn start_trail_system(
                         player.is_drawing_trail = true;
                         tile.is_trail = true;
                         tile.owner = Some(player_entity);
-                        sprite.color = player.color.with_alpha(0.6); // Match alpha value with movement.rs
+
+                        // Trail is more visible (higher alpha)
+                        sprite.color = player.color.with_alpha(0.8);
                     }
                     break;
                 }
@@ -272,6 +274,9 @@ pub fn claim_territory_system(
 
         let mut claimed_count = 0;
 
+        // Define the territory color - will use same for both inside area and border
+        let territory_color = player_color.with_alpha(0.5);
+
         for y in 0..grid_height {
             for x in 0..grid_width {
                 // If cell is empty (0) and not marked by flood fill, it's inside
@@ -280,7 +285,9 @@ pub fn claim_territory_system(
                         if let Ok((_, mut tile, mut sprite)) = tile_query.get_mut(entity) {
                             tile.owner = Some(player_entity);
                             tile.is_trail = false;
-                            sprite.color = player_color.with_alpha(0.6); // Make territory same alpha as trail
+
+                            // Territory color
+                            sprite.color = territory_color;
                             claimed_count += 1;
                         }
                     }
@@ -288,11 +295,13 @@ pub fn claim_territory_system(
             }
         }
 
-        // Step 5: Convert all trail tiles to territory
+        // Step 5: Convert all trail tiles to territory borders with the same color as territory
         for (_, mut tile, mut sprite) in tile_query.iter_mut() {
             if tile.is_trail && tile.owner == Some(player_entity) {
                 tile.is_trail = false;
-                sprite.color = player_color.with_alpha(0.6); // Make border same alpha as territory
+
+                // Make border the same color as territory (same alpha)
+                sprite.color = territory_color;
             }
         }
 
