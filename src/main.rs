@@ -1,13 +1,16 @@
 use bevy::prelude::*;
 mod components;
+mod events;
 mod resources;
 mod systems;
 
 use components::*;
+use events::PlayerDeathEvent;
 use resources::*;
 use systems::collision::*;
 use systems::input::*;
 use systems::movement::*;
+use systems::player::handle_player_death;
 use systems::trails::*;
 
 fn main() {
@@ -20,6 +23,7 @@ fn main() {
             }),
             ..default()
         }))
+        .add_event::<PlayerDeathEvent>()
         .insert_resource(GameState::default())
         .add_systems(Startup, setup_game)
         .add_systems(
@@ -32,7 +36,9 @@ fn main() {
                 render_trail_system,
                 claim_territory_system,
                 collision_detection_system,
+                handle_player_death,
                 game_timer_system,
+                init_player_territory.run_if(run_once()),
             ),
         )
         .run();
@@ -88,9 +94,16 @@ fn setup_game(mut commands: Commands) {
 
     // Spawn player centered on a tile
     let player_color = Color::srgb(0.2, 0.7, 0.9);
-    let player_start_x = 0.0; // Center of grid
-    let player_start_y = 0.0;
 
+    // Calculate center tile coordinates (this ensures we're on an actual tile)
+    let center_tile_x = grid_settings.grid_width / 2;
+    let center_tile_y = grid_settings.grid_height / 2;
+
+    // Calculate the exact pixel position of the center tile
+    let player_start_x = (center_tile_x as f32 * tile_size) - half_width + (tile_size / 2.0);
+    let player_start_y = (center_tile_y as f32 * tile_size) - half_height + (tile_size / 2.0);
+
+    // Spawn the player entity
     commands.spawn((
         Sprite {
             color: player_color,
@@ -105,9 +118,12 @@ fn setup_game(mut commands: Commands) {
         Player {
             speed: 5.0, // Speed in tiles per second
             direction: Vec2::ZERO,
+            buffered_direction: None,
             score: 0,
             color: player_color,
             is_drawing_trail: false,
+            last_tile_pos: (center_tile_x, center_tile_y), // Set to the exact tile position
+            is_moving_to_next_tile: false,
         },
     ));
 }
@@ -136,6 +152,54 @@ fn game_timer_system(
 
             // Here you would display the winner
             println!("Game over! Winner determined.");
+        }
+    }
+}
+
+fn init_player_territory(
+    grid_settings: Res<GridSettings>,
+    mut player_query: Query<(Entity, &mut Player)>,
+    mut tile_query: Query<(&mut Tile, &mut Sprite)>,
+) {
+    // Get the player entity
+    if let Ok((player_entity, player)) = player_query.get_single() {
+        // Calculate center tile coordinates
+        let center_tile_x = grid_settings.grid_width / 2;
+        let center_tile_y = grid_settings.grid_height / 2;
+
+        // Claim starting territory for the player
+        let territory_radius = 2; // Claim a 5x5 area
+
+        for (mut tile, mut sprite) in tile_query.iter_mut() {
+            let dx = (tile.x - center_tile_x).abs();
+            let dy = (tile.y - center_tile_y).abs();
+
+            if dx <= territory_radius && dy <= territory_radius {
+                // Mark as player territory
+                tile.owner = Some(player_entity);
+                sprite.color = player.color.with_alpha(0.5);
+            }
+        }
+
+        // Give player initial score based on territory
+        let territory_size = (territory_radius * 2 + 1).pow(2);
+        if let Ok((_, mut player)) = player_query.get_single_mut() {
+            player.score = territory_size as u32;
+        }
+
+        println!("Player starting with {} territory tiles", territory_size);
+    }
+}
+
+// Add this helper for running a system only once
+fn run_once() -> impl FnMut() -> bool {
+    let mut has_run = false;
+    move || {
+        if !has_run {
+            has_run = true;
+            true
+        } else {
+            false
         }
     }
 }

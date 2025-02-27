@@ -1,4 +1,5 @@
 use crate::components::{GridSettings, Player, Tile, Trail};
+use crate::events::{PlayerDeathEvent, PlayerDeathReason};
 use crate::resources::CompleteTrail;
 use bevy::prelude::*;
 
@@ -134,9 +135,9 @@ pub fn render_trail_system(
 // The main territory claiming system - uses flood fill to accurately determine
 // which tiles are inside the enclosed area
 pub fn claim_territory_system(
-    _commands: Commands,
     grid_settings: Res<GridSettings>,
     complete_trail: Option<ResMut<CompleteTrail>>,
+    mut death_events: EventWriter<PlayerDeathEvent>,
     mut player_query: Query<(Entity, &mut Player)>,
     mut tile_query: Query<(Entity, &mut Tile, &mut Sprite)>,
 ) {
@@ -147,7 +148,28 @@ pub fn claim_territory_system(
         }
 
         let player_entity = trail_info.player.unwrap();
+        let entry_point = trail_info.entry_point; // Get the entry point
         trail_info.complete = false; // Reset flag
+
+        println!("============ TERRITORY CLAIMING STARTED ============");
+
+        // If no entry point, it's a pure loop by crossing own trail - PLAYER DIES
+        if entry_point.is_none() {
+            // Send a player death event instead of directly handling it here
+            death_events.send(PlayerDeathEvent {
+                player_entity,
+                reason: PlayerDeathReason::CrossedTrail,
+            });
+
+            return;
+        }
+
+        // We have an entry point, so the player completed loop by returning to territory
+        let (entry_x, entry_y) = entry_point.unwrap();
+        println!(
+            "Player completed loop by returning to territory at ({}, {})",
+            entry_x, entry_y
+        );
 
         let grid_width = grid_settings.grid_width as usize;
         let grid_height = grid_settings.grid_height as usize;
@@ -155,6 +177,10 @@ pub fn claim_territory_system(
         // Step 1: Create grid representation
         let mut grid = vec![vec![0; grid_width]; grid_height]; // 0=empty, 1=player territory, 2=trail, 3=other player
         let mut tile_entities = vec![vec![None; grid_width]; grid_height];
+
+        // Collect all trail and territory tiles
+        let mut trail_coords = Vec::new();
+        let mut territory_coords = Vec::new();
 
         for (tile_entity, tile, _) in tile_query.iter() {
             if tile.x >= 0
@@ -170,8 +196,10 @@ pub fn claim_territory_system(
                 if tile.owner == Some(player_entity) {
                     if tile.is_trail {
                         grid[y][x] = 2; // Trail
+                        trail_coords.push((x, y));
                     } else {
                         grid[y][x] = 1; // Player territory
+                        territory_coords.push((x, y));
                     }
                 } else if tile.owner.is_some() {
                     grid[y][x] = 3; // Other player territory
@@ -179,23 +207,28 @@ pub fn claim_territory_system(
             }
         }
 
-        // Step 2: Create a new grid for the flood fill
+        println!(
+            "Found {} trail tiles and {} territory tiles",
+            trail_coords.len(),
+            territory_coords.len()
+        );
+
+        // Step 2: Find all potentially enclosed areas
         let mut fill_grid = vec![vec![false; grid_width]; grid_height];
 
-        // Mark all territory and trail as unavailable for flood fill
+        // Mark all non-empty cells as visited
         for y in 0..grid_height {
             for x in 0..grid_width {
                 if grid[y][x] > 0 {
-                    // Any non-empty cell
                     fill_grid[y][x] = true;
                 }
             }
         }
 
-        // Step 3: Flood fill from all edges to mark "outside" area
+        // Flood fill from the edges to mark outside areas
         let mut queue = Vec::new();
 
-        // Start from all edge cells
+        // Start from edges
         for x in 0..grid_width {
             if !fill_grid[0][x] {
                 queue.push((x, 0));
@@ -235,77 +268,54 @@ pub fn claim_territory_system(
             }
         }
 
-        // Step 4 debug - only show stats if we actually claimed tiles
-        let mut outside_count = 0;
-        let mut inside_count = 0;
-        let mut trail_count = 0;
-        let mut territory_count = 0;
+        // Step 3: Collect all enclosed tiles
+        let mut enclosed_tiles = Vec::new();
 
         for y in 0..grid_height {
             for x in 0..grid_width {
-                if grid[y][x] == 0 {
-                    if fill_grid[y][x] {
-                        outside_count += 1;
-                    } else {
-                        inside_count += 1;
-                    }
-                } else if grid[y][x] == 1 {
-                    territory_count += 1;
-                } else if grid[y][x] == 2 {
-                    trail_count += 1;
+                if grid[y][x] == 0 && !fill_grid[y][x] {
+                    enclosed_tiles.push((x, y));
                 }
             }
         }
 
-        // Only print stats if there are tiles to claim
-        if inside_count > 0 {
-            println!(
-                "Grid stats: {} outside, {} inside, {} trail, {} territory",
-                outside_count, inside_count, trail_count, territory_count
-            );
-        }
+        println!("Found {} enclosed tiles", enclosed_tiles.len());
 
-        // Step 4: Claim all cells not reached by the flood fill (they're inside the territory)
-        let player_color = if let Ok((_, player)) = player_query.get(player_entity) {
-            player.color
-        } else {
-            Color::srgba(0.5, 0.5, 0.5, 1.0)
-        };
-
-        let mut claimed_count = 0;
-
-        // Define the territory color - will use same for both inside area and border
+        // Always convert trail to territory (happens regardless of enclosed area)
+        let player_color = player_query
+            .get(player_entity)
+            .map_or(Color::srgba(0.5, 0.5, 0.5, 1.0), |(_, p)| p.color);
         let territory_color = player_color.with_alpha(0.5);
 
-        for y in 0..grid_height {
-            for x in 0..grid_width {
-                // If cell is empty (0) and not marked by flood fill, it's inside
-                if grid[y][x] == 0 && !fill_grid[y][x] {
-                    if let Some(entity) = tile_entities[y][x] {
-                        if let Ok((_, mut tile, mut sprite)) = tile_query.get_mut(entity) {
-                            tile.owner = Some(player_entity);
-                            tile.is_trail = false;
-
-                            // Territory color
-                            sprite.color = territory_color;
-                            claimed_count += 1;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Step 5: Convert all trail tiles to territory borders with the same color as territory
         for (_, mut tile, mut sprite) in tile_query.iter_mut() {
             if tile.is_trail && tile.owner == Some(player_entity) {
                 tile.is_trail = false;
-
-                // Make border the same color as territory (same alpha)
                 sprite.color = territory_color;
             }
         }
 
-        // Update player score and only print if we claimed tiles
+        // If there are no enclosed tiles, stop here
+        if enclosed_tiles.is_empty() {
+            println!("No enclosed tiles found. Claiming process ended.");
+            println!("============ TERRITORY CLAIMING ENDED ============");
+            return;
+        }
+
+        // Step 5: Claim all enclosed tiles (since the loop was completed by returning to territory)
+        let mut claimed_count = 0;
+
+        for &(x, y) in &enclosed_tiles {
+            if let Some(entity) = tile_entities[y][x] {
+                if let Ok((_, mut tile, mut sprite)) = tile_query.get_mut(entity) {
+                    tile.owner = Some(player_entity);
+                    tile.is_trail = false;
+                    sprite.color = territory_color;
+                    claimed_count += 1;
+                }
+            }
+        }
+
+        // Update player score
         if claimed_count > 0 {
             if let Ok((_, mut player)) = player_query.get_mut(player_entity) {
                 player.score += claimed_count;
@@ -314,26 +324,12 @@ pub fn claim_territory_system(
                     claimed_count, player.score
                 );
             }
+            println!(
+                "Territory claimed successfully by returning to territory at ({}, {})",
+                entry_x, entry_y
+            );
         }
+
+        println!("============ TERRITORY CLAIMING ENDED ============");
     }
-}
-
-// Helper function to calculate polygon area using Shoelace formula
-// (Still useful for Territory component so keeping it)
-#[allow(dead_code)]
-fn calculate_polygon_area(points: &[Vec2]) -> f32 {
-    if points.len() < 3 {
-        return 0.0;
-    }
-
-    let mut area = 0.0;
-    let n = points.len();
-
-    for i in 0..n {
-        let j = (i + 1) % n;
-        area += points[i].x * points[j].y;
-        area -= points[j].x * points[i].y;
-    }
-
-    (area / 2.0).abs()
 }

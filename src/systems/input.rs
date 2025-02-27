@@ -24,14 +24,27 @@ pub fn player_input_system(
 
         // Only update direction if there's input
         if new_direction != Vec2::ZERO {
+            // Normalize the direction
+            new_direction = new_direction.normalize();
+
             // Check if the new direction is opposite to the current direction
             let current_dir = player.direction;
             let is_opposite = (current_dir.x != 0.0 && new_direction.x == -current_dir.x)
                 || (current_dir.y != 0.0 && new_direction.y == -current_dir.y);
 
-            // Only update if not opposite or if currently not moving
-            if !is_opposite || current_dir == Vec2::ZERO {
-                player.direction = new_direction.normalize();
+            // Don't allow direct reversals
+            if is_opposite {
+                // Ignore the reversal attempt
+                return;
+            }
+
+            // If the player is currently moving to the next tile, buffer the direction change
+            if player.is_moving_to_next_tile && current_dir != Vec2::ZERO {
+                player.buffered_direction = Some(new_direction);
+            } else {
+                // Otherwise, apply the direction immediately
+                player.direction = new_direction;
+                player.buffered_direction = None;
             }
         }
     }

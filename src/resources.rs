@@ -23,4 +23,5 @@ impl Default for GameState {
 pub struct CompleteTrail {
     pub player: Option<Entity>,
     pub complete: bool,
+    pub entry_point: Option<(i32, i32)>,
 }

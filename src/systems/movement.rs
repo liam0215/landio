@@ -1,3 +1,4 @@
+// In src/systems/movement.rs
 use crate::components::{GridSettings, Player, Tile};
 use crate::resources::CompleteTrail;
 use bevy::prelude::*;
@@ -15,15 +16,124 @@ pub fn player_movement_system(
 
     for (entity, mut transform, mut player) in query.iter_mut() {
         if player.direction.length_squared() > 0.0 {
-            // Get current grid position
+            // Calculate current grid position
             let current_x = ((transform.translation.x + half_width) / tile_size).floor() as i32;
             let current_y = ((transform.translation.y + half_height) / tile_size).floor() as i32;
+            let current_pos = (current_x, current_y);
 
-            // Calculate movement (grid-based)
+            // Calculate tile center position
+            let tile_center_x = (current_x as f32 * tile_size) - half_width + (tile_size / 2.0);
+            let tile_center_y = (current_y as f32 * tile_size) - half_height + (tile_size / 2.0);
+            let tile_center = Vec2::new(tile_center_x, tile_center_y);
+
+            // Calculate distance to tile center
+            let distance_to_center =
+                Vec2::new(transform.translation.x, transform.translation.y).distance(tile_center);
+
+            // If we're at a tile center or just starting movement
+            if distance_to_center < 0.5
+                || (!player.is_moving_to_next_tile && current_pos != player.last_tile_pos)
+            {
+                // We've reached a new tile center
+                player.is_moving_to_next_tile = false;
+                player.last_tile_pos = current_pos;
+
+                // Apply any buffered direction change now that we're at a tile center
+                if let Some(new_dir) = player.buffered_direction {
+                    player.direction = new_dir;
+                    player.buffered_direction = None;
+                    println!("Applied buffered direction: {:?}", player.direction);
+                }
+
+                // Mark that we're starting movement to the next tile
+                player.is_moving_to_next_tile = true;
+
+                // Determine current tile state - is this the player's territory?
+                let mut current_is_territory = false;
+
+                for (_, tile, _) in tile_query.iter() {
+                    if tile.x == current_x && tile.y == current_y {
+                        if tile.owner == Some(entity) {
+                            if !tile.is_trail {
+                                current_is_territory = true;
+                            }
+                        }
+                        break;
+                    }
+                }
+
+                // Determine next tile state based on current direction
+                let next_dir = player.direction.normalize();
+                let next_x = current_x + next_dir.x.round() as i32;
+                let next_y = current_y + next_dir.y.round() as i32;
+
+                // Check if next tile is in bounds
+                if next_x >= 0
+                    && next_x < grid_settings.grid_width
+                    && next_y >= 0
+                    && next_y < grid_settings.grid_height
+                {
+                    // Check if next tile is player's territory
+                    let mut next_is_territory = false;
+
+                    for (_, tile, _) in tile_query.iter() {
+                        if tile.x == next_x && tile.y == next_y {
+                            if tile.owner == Some(entity) {
+                                if !tile.is_trail {
+                                    next_is_territory = true;
+                                }
+                            }
+                            break;
+                        }
+                    }
+
+                    // Case 1: Currently on territory, about to leave territory
+                    // Mark that we'll start drawing trail at the NEXT tile, not this one
+                    if current_is_territory && !next_is_territory && !player.is_drawing_trail {
+                        player.is_drawing_trail = true;
+                        println!("Leaving territory - will start drawing trail on next tile");
+                    }
+                    // Case 2: Coming back to own territory while drawing a trail
+                    // Complete the loop and claim territory
+                    else if next_is_territory && player.is_drawing_trail {
+                        println!("Returning to territory - will claim enclosed area");
+                    }
+                }
+
+                // Process current tile (not the next one)
+                for (_, mut tile, mut sprite) in tile_query.iter_mut() {
+                    if tile.x == current_x && tile.y == current_y {
+                        // If we're on our own territory and we're drawing a trail
+                        // and it's not the tile we just started drawing from
+                        if tile.owner == Some(entity) && !tile.is_trail && player.is_drawing_trail {
+                            // Player returned to their territory - complete the trail
+                            player.is_drawing_trail = false;
+                            println!(
+                                "Player returned to their territory - claiming enclosed area!"
+                            );
+
+                            commands.insert_resource(CompleteTrail {
+                                player: Some(entity),
+                                complete: true,
+                                entry_point: Some((current_x, current_y)),
+                            });
+                        }
+                        // Mark as part of trail if drawing and NOT the player's territory
+                        else if player.is_drawing_trail && !current_is_territory {
+                            tile.is_trail = true;
+                            tile.owner = Some(entity);
+
+                            // Keep consistent trail color
+                            sprite.color = player.color.with_alpha(0.8);
+                        }
+                        break;
+                    }
+                }
+            }
+
+            // Apply movement (smooth)
             let normalized_dir = player.direction.normalize();
             let movement = normalized_dir * player.speed * time.delta_secs();
-
-            // Apply movement
             transform.translation.x += movement.x * tile_size;
             transform.translation.y += movement.y * tile_size;
 
@@ -35,97 +145,13 @@ pub fn player_movement_system(
             let constrained_x = new_x.clamp(0, grid_settings.grid_width - 1);
             let constrained_y = new_y.clamp(0, grid_settings.grid_height - 1);
 
-            // If position changed, update trails
-            if constrained_x != current_x || constrained_y != current_y {
-                // Determine current tile state
-                let mut current_is_territory = false;
-                let mut current_is_trail = false;
-                let mut current_is_owned = false;
-
-                for (_tile_entity, tile, _) in tile_query.iter() {
-                    if tile.x == current_x && tile.y == current_y {
-                        if tile.owner == Some(entity) {
-                            current_is_owned = true;
-                            if tile.is_trail {
-                                current_is_trail = true;
-                            } else {
-                                current_is_territory = true;
-                            }
-                        }
-                        break;
-                    }
-                }
-
-                // Determine new tile state
-                let mut new_is_territory = false;
-                let mut new_is_owned = false;
-
-                for (_tile_entity, tile, _) in tile_query.iter() {
-                    if tile.x == constrained_x && tile.y == constrained_y {
-                        if tile.owner == Some(entity) && !tile.is_trail {
-                            new_is_territory = true;
-                            new_is_owned = true;
-                        }
-                        break;
-                    }
-                }
-
-                // Update the tile at the new position
-                for (_tile_entity, mut tile, mut sprite) in tile_query.iter_mut() {
-                    if tile.x == constrained_x && tile.y == constrained_y {
-                        // Case 1: Coming from outside territory (either trail or unowned) and entering territory
-                        if !current_is_territory && new_is_territory && player.is_drawing_trail {
-                            // Only claim territory if we have a valid trail
-                            let mut trail_count = 0;
-                            for (_, trail_tile, _) in tile_query.iter() {
-                                if trail_tile.is_trail && trail_tile.owner == Some(entity) {
-                                    trail_count += 1;
-                                    if trail_count >= 5 {
-                                        // Complete the trail and claim area
-                                        player.is_drawing_trail = false;
-                                        println!("Player returned to their territory - claiming enclosed area!");
-
-                                        commands.insert_resource(CompleteTrail {
-                                            player: Some(entity),
-                                            complete: true,
-                                        });
-                                        break;
-                                    }
-                                }
-                            }
-
-                            if trail_count < 5 {
-                                // Not enough trail tiles to claim, just stop drawing
-                                player.is_drawing_trail = false;
-                            }
-                        }
-                        // Case 2: Leaving owned territory and entering unowned area
-                        else if current_is_territory && !new_is_owned {
-                            player.is_drawing_trail = true;
-                            tile.is_trail = true;
-                            tile.owner = Some(entity);
-
-                            // Make trail a brighter, more distinct color
-                            sprite.color = player.color.with_alpha(0.8);
-                            println!("Player left their territory - starting a trail!");
-                        }
-                        // Case 3: Already drawing a trail and continuing on unowned area
-                        else if player.is_drawing_trail && !new_is_owned {
-                            tile.is_trail = true;
-                            tile.owner = Some(entity);
-
-                            // Keep consistent trail color
-                            sprite.color = player.color.with_alpha(0.8);
-                        }
-                        break;
-                    }
-                }
-
-                // Snap position to center of tile
+            // If we've gone beyond the grid boundaries, snap back
+            if constrained_x != new_x || constrained_y != new_y {
                 transform.translation.x =
                     (constrained_x as f32 * tile_size) - half_width + (tile_size / 2.0);
                 transform.translation.y =
                     (constrained_y as f32 * tile_size) - half_height + (tile_size / 2.0);
+                player.is_moving_to_next_tile = false; // We've snapped to a tile center
             }
         }
 
@@ -185,6 +211,7 @@ pub fn player_movement_system(
                 commands.insert_resource(CompleteTrail {
                     player: Some(entity),
                     complete: true,
+                    entry_point: None,
                 });
             }
         }

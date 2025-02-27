@@ -5,9 +5,12 @@ use bevy::prelude::*;
 pub struct Player {
     pub speed: f32,
     pub direction: Vec2,
+    pub buffered_direction: Option<Vec2>,
     pub score: u32,
     pub color: Color,
     pub is_drawing_trail: bool,
+    pub last_tile_pos: (i32, i32),
+    pub is_moving_to_next_tile: bool,
 }
 
 #[derive(Component)]
