@@ -1,9 +1,7 @@
-use crate::components::{GridSettings, Player, Territory, Tile, Trail};
+use crate::components::{GridSettings, Player, Tile, Trail};
 use crate::resources::CompleteTrail;
 use bevy::prelude::*;
 
-// Start drawing a trail when player moves out of their territory
-// In start_trail_system:
 pub fn start_trail_system(
     grid_settings: Res<GridSettings>,
     mut player_query: Query<(Entity, &Transform, &mut Player)>,
@@ -23,7 +21,7 @@ pub fn start_trail_system(
             // Check if the current tile is part of the player's territory
             let mut on_own_territory = false;
 
-            for (tile_entity, mut tile, mut sprite) in tile_query.iter_mut() {
+            for (_tile_entity, mut tile, mut sprite) in tile_query.iter_mut() {
                 if tile.x == current_x && tile.y == current_y {
                     // If tile is owned by this player but is not a trail
                     if tile.owner == Some(player_entity) && !tile.is_trail {
@@ -34,7 +32,7 @@ pub fn start_trail_system(
                         player.is_drawing_trail = true;
                         tile.is_trail = true;
                         tile.owner = Some(player_entity);
-                        sprite.color = player.color.with_alpha(0.5);
+                        sprite.color = player.color.with_alpha(0.6); // Match alpha value with movement.rs
                     }
                     break;
                 }
@@ -131,129 +129,8 @@ pub fn render_trail_system(
     }
 }
 
-pub fn check_loop_system(
-    grid_settings: Res<GridSettings>,
-    mut commands: Commands,
-    mut player_query: Query<(Entity, &mut Player)>,
-    mut tile_query: Query<(Entity, &mut Tile, &mut Sprite)>,
-) {
-    let grid_width = grid_settings.grid_width;
-    let grid_height = grid_settings.grid_height;
-
-    // First, create a grid representation of all tiles and their states
-    let mut tile_grid = vec![vec![None; grid_width as usize]; grid_height as usize];
-    let mut tile_entities = vec![vec![None; grid_width as usize]; grid_height as usize];
-
-    // Fill the grid with current tile state
-    for (tile_entity, tile, _) in tile_query.iter() {
-        if tile.x >= 0 && tile.x < grid_width && tile.y >= 0 && tile.y < grid_height {
-            tile_grid[tile.y as usize][tile.x as usize] = Some((tile.owner, tile.is_trail));
-            tile_entities[tile.y as usize][tile.x as usize] = Some(tile_entity);
-        }
-    }
-
-    // For each player
-    for (player_entity, mut player) in player_query.iter_mut() {
-        if !player.is_drawing_trail {
-            continue;
-        }
-
-        // Find all trail tiles for this player
-        let mut trail_points = Vec::new();
-        for y in 0..grid_height as usize {
-            for x in 0..grid_width as usize {
-                if let Some((owner, is_trail)) = tile_grid[y][x] {
-                    if is_trail && owner == Some(player_entity) {
-                        trail_points.push((x as i32, y as i32));
-                    }
-                }
-            }
-        }
-
-        // Simple loop detection: check if any trail tile has more than 2 trail neighbors
-        let mut has_loop = false;
-        for &(tx, ty) in &trail_points {
-            let neighbors = [(tx + 1, ty), (tx - 1, ty), (tx, ty + 1), (tx, ty - 1)];
-
-            let mut trail_neighbor_count = 0;
-            for &(nx, ny) in &neighbors {
-                if nx >= 0 && nx < grid_width && ny >= 0 && ny < grid_height {
-                    if let Some((owner, is_trail)) = tile_grid[ny as usize][nx as usize] {
-                        if is_trail && owner == Some(player_entity) {
-                            trail_neighbor_count += 1;
-                        }
-                    }
-                }
-            }
-
-            if trail_neighbor_count > 2 {
-                has_loop = true;
-                break;
-            }
-        }
-
-        if has_loop {
-            println!("Loop detected! Claiming territory...");
-            player.is_drawing_trail = false;
-
-            // Find tiles adjacent to trail
-            let mut tiles_to_claim = Vec::new();
-
-            for &(tx, ty) in &trail_points {
-                let neighbors = [(tx + 1, ty), (tx - 1, ty), (tx, ty + 1), (tx, ty - 1)];
-
-                for &(nx, ny) in &neighbors {
-                    if nx >= 0 && nx < grid_width && ny >= 0 && ny < grid_height {
-                        // If tile exists and is not already owned by this player
-                        if let Some((owner, is_trail)) = tile_grid[ny as usize][nx as usize] {
-                            if !is_trail && owner != Some(player_entity) {
-                                if let Some(entity) = tile_entities[ny as usize][nx as usize] {
-                                    tiles_to_claim.push(entity);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Now convert trails to borders
-            let mut trail_tiles_to_convert = Vec::new();
-            for &(tx, ty) in &trail_points {
-                if let Some(entity) = tile_entities[ty as usize][tx as usize] {
-                    trail_tiles_to_convert.push(entity);
-                }
-            }
-
-            // Now apply all changes
-            let claim_count = tiles_to_claim.len();
-
-            // Claim adjacent tiles
-            for tile_entity in tiles_to_claim {
-                if let Ok((_, mut tile, mut sprite)) = tile_query.get_mut(tile_entity) {
-                    tile.owner = Some(player_entity);
-                    tile.is_trail = false;
-                    sprite.color = player.color.with_alpha(0.3);
-                }
-            }
-
-            // Convert trail to territory border
-            for tile_entity in trail_tiles_to_convert {
-                if let Ok((_, mut tile, mut sprite)) = tile_query.get_mut(tile_entity) {
-                    tile.is_trail = false;
-                    sprite.color = player.color.with_alpha(0.7);
-                }
-            }
-
-            // Update player score
-            player.score += claim_count as u32;
-            println!(
-                "Player claimed {} tiles. Total score: {}",
-                claim_count, player.score
-            );
-        }
-    }
-}
-
+// The main territory claiming system - uses flood fill to accurately determine
+// which tiles are inside the enclosed area
 pub fn claim_territory_system(
     _commands: Commands,
     grid_settings: Res<GridSettings>,
@@ -356,7 +233,7 @@ pub fn claim_territory_system(
             }
         }
 
-        // Step 4 debug
+        // Step 4 debug - only show stats if we actually claimed tiles
         let mut outside_count = 0;
         let mut inside_count = 0;
         let mut trail_count = 0;
@@ -378,10 +255,14 @@ pub fn claim_territory_system(
             }
         }
 
-        println!(
-            "Grid stats: {} outside, {} inside, {} trail, {} territory",
-            outside_count, inside_count, trail_count, territory_count
-        );
+        // Only print stats if there are tiles to claim
+        if inside_count > 0 {
+            println!(
+                "Grid stats: {} outside, {} inside, {} trail, {} territory",
+                outside_count, inside_count, trail_count, territory_count
+            );
+        }
+
         // Step 4: Claim all cells not reached by the flood fill (they're inside the territory)
         let player_color = if let Ok((_, player)) = player_query.get(player_entity) {
             player.color
@@ -399,7 +280,7 @@ pub fn claim_territory_system(
                         if let Ok((_, mut tile, mut sprite)) = tile_query.get_mut(entity) {
                             tile.owner = Some(player_entity);
                             tile.is_trail = false;
-                            sprite.color = player_color.with_alpha(0.3);
+                            sprite.color = player_color.with_alpha(0.6); // Make territory same alpha as trail
                             claimed_count += 1;
                         }
                     }
@@ -411,65 +292,26 @@ pub fn claim_territory_system(
         for (_, mut tile, mut sprite) in tile_query.iter_mut() {
             if tile.is_trail && tile.owner == Some(player_entity) {
                 tile.is_trail = false;
-                sprite.color = player_color.with_alpha(0.7);
+                sprite.color = player_color.with_alpha(0.6); // Make border same alpha as territory
             }
         }
 
-        // Update player score
-        if let Ok((_, mut player)) = player_query.get_mut(player_entity) {
-            player.score += claimed_count;
-            println!(
-                "Player claimed {} tiles. Total score: {}",
-                claimed_count, player.score
-            );
-        }
-    }
-}
-
-// This is a simplified version of territory claiming
-// In a real implementation, this would use proper geometry calculations
-pub fn check_territory_claim_system(
-    mut commands: Commands,
-    trail_query: Query<(Entity, &Trail)>,
-    mut player_query: Query<(Entity, &mut Player)>,
-) {
-    for (trail_entity, trail) in trail_query.iter() {
-        if !trail.is_active {
-            continue;
-        }
-
-        // Check if trail forms a loop (simplified)
-        if trail.points.len() > 10 {
-            let first_point = trail.points.first().unwrap();
-            let last_point = trail.points.last().unwrap();
-
-            // If start and end points are close, consider it a loop
-            if first_point.distance(*last_point) < 5.0 {
-                // Get the player who owns this trail
-                if let Ok((player_entity, mut player)) = player_query.get_mut(trail.owner) {
-                    // Calculate territory area (simplified)
-                    let approx_area = calculate_polygon_area(&trail.points);
-
-                    // Create territory
-                    commands.spawn(Territory {
-                        owner: player_entity,
-                        polygon: trail.points.clone(),
-                        area: approx_area,
-                    });
-
-                    // Update player score
-                    player.score += approx_area as u32;
-                    player.is_drawing_trail = false;
-
-                    // Remove the trail
-                    commands.entity(trail_entity).despawn();
-                }
+        // Update player score and only print if we claimed tiles
+        if claimed_count > 0 {
+            if let Ok((_, mut player)) = player_query.get_mut(player_entity) {
+                player.score += claimed_count;
+                println!(
+                    "Player claimed {} tiles. Total score: {}",
+                    claimed_count, player.score
+                );
             }
         }
     }
 }
 
 // Helper function to calculate polygon area using Shoelace formula
+// (Still useful for Territory component so keeping it)
+#[allow(dead_code)]
 fn calculate_polygon_area(points: &[Vec2]) -> f32 {
     if points.len() < 3 {
         return 0.0;

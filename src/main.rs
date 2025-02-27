@@ -29,12 +29,10 @@ fn main() {
                 player_movement_system,
                 start_trail_system,
                 update_trail_system,
-                check_loop_system,
                 render_trail_system,
-                check_territory_claim_system,
+                claim_territory_system,
                 collision_detection_system,
                 game_timer_system,
-                claim_territory_system,
             ),
         )
         .run();
