@@ -5,28 +5,32 @@ pub fn player_input_system(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut query: Query<&mut Player>,
 ) {
-    // This example handles only the first player's input
     if let Ok(mut player) = query.get_single_mut() {
+        // Start with no direction
         let mut new_direction = Vec2::ZERO;
 
+        // Process only cardinal directions - no diagonals allowed
+        // Priority order: right > left > down > up (later ones override earlier ones)
+        // You can change this order if you prefer a different priority
+
         if keyboard_input.pressed(KeyCode::KeyW) || keyboard_input.pressed(KeyCode::ArrowUp) {
-            new_direction.y += 1.0;
+            new_direction = Vec2::new(0.0, 1.0);
         }
+
         if keyboard_input.pressed(KeyCode::KeyS) || keyboard_input.pressed(KeyCode::ArrowDown) {
-            new_direction.y -= 1.0;
+            new_direction = Vec2::new(0.0, -1.0);
         }
+
         if keyboard_input.pressed(KeyCode::KeyA) || keyboard_input.pressed(KeyCode::ArrowLeft) {
-            new_direction.x -= 1.0;
+            new_direction = Vec2::new(-1.0, 0.0);
         }
+
         if keyboard_input.pressed(KeyCode::KeyD) || keyboard_input.pressed(KeyCode::ArrowRight) {
-            new_direction.x += 1.0;
+            new_direction = Vec2::new(1.0, 0.0);
         }
 
         // Only update direction if there's input
         if new_direction != Vec2::ZERO {
-            // Normalize the direction
-            new_direction = new_direction.normalize();
-
             // Check if the new direction is opposite to the current direction
             let current_dir = player.direction;
             let is_opposite = (current_dir.x != 0.0 && new_direction.x == -current_dir.x)

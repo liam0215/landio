@@ -21,13 +21,6 @@ pub struct Trail {
 }
 
 #[derive(Component)]
-pub struct Territory {
-    pub owner: Entity,
-    pub polygon: Vec<Vec2>,
-    pub area: f32,
-}
-
-#[derive(Component)]
 pub struct Tile {
     pub x: i32,
     pub y: i32,

@@ -1,5 +1,6 @@
 use crate::components::{GridSettings, Player, Tile};
 use crate::events::{PlayerDeathEvent, PlayerDeathReason};
+use crate::CompleteTrail;
 use bevy::prelude::*;
 
 // System that handles player death events
@@ -9,7 +10,23 @@ pub fn handle_player_death(
     mut player_query: Query<&mut Player>,
     mut tile_query: Query<(Entity, &mut Tile, &mut Sprite)>,
     grid_settings: Res<GridSettings>,
+    // Add this to cancel any pending territory claiming
+    mut complete_trail: Option<ResMut<CompleteTrail>>,
 ) {
+    // Skip if no death events
+    if death_events.is_empty() {
+        return;
+    }
+
+    // First, explicitly cancel any pending territory claiming operations
+    if let Some(mut trail_info) = complete_trail {
+        // Clear the complete trail resource to cancel any territory claiming
+        trail_info.complete = false;
+        trail_info.player = None;
+        trail_info.entry_point = None;
+        println!("Cancelled any pending territory claims due to player death");
+    }
+
     for event in death_events.read() {
         let player_entity = event.player_entity;
 
@@ -36,8 +53,12 @@ pub fn handle_player_death(
         };
 
         if let Ok(mut player) = player_query.get_mut(player_entity) {
-            // Stop drawing trail
+            // Stop drawing trail immediately
             player.is_drawing_trail = false;
+            player.buffered_direction = None;
+
+            // Set direction to zero to stop movement
+            player.direction = Vec2::ZERO;
 
             // Reset score to ZERO - lose all points!
             player.score = 0;
@@ -65,30 +86,56 @@ pub fn handle_player_death(
             player.last_tile_pos = (center_tile_x, center_tile_y);
         }
 
-        // Remove ALL player territories and trails
+        let mut grid = vec![
+            vec![false; grid_settings.grid_width as usize];
+            grid_settings.grid_height as usize
+        ];
+
+        // First mark all tiles that are owned by this player in the grid
+        for (_, tile, _) in tile_query.iter() {
+            if tile.x >= 0
+                && tile.x < grid_settings.grid_width
+                && tile.y >= 0
+                && tile.y < grid_settings.grid_height
+                && tile.owner == Some(player_entity)
+            {
+                grid[tile.y as usize][tile.x as usize] = true;
+            }
+        }
+
+        // Now reset ALL player tiles based on the grid
         let mut territory_count = 0;
         let mut trail_count = 0;
 
         for (_, mut tile, mut sprite) in tile_query.iter_mut() {
-            if tile.owner == Some(player_entity) {
-                // Count what we're removing
-                if tile.is_trail {
-                    trail_count += 1;
-                } else {
-                    territory_count += 1;
+            if tile.x >= 0
+                && tile.x < grid_settings.grid_width
+                && tile.y >= 0
+                && tile.y < grid_settings.grid_height
+            {
+                let x = tile.x as usize;
+                let y = tile.y as usize;
+
+                if grid[y][x] {
+                    // Count what we're removing
+                    if tile.is_trail {
+                        trail_count += 1;
+                    } else {
+                        territory_count += 1;
+                    }
+
+                    // Reset ownership and appearance
+                    tile.owner = None;
+                    tile.is_trail = false;
+
+                    // Reset to original color (checkerboard pattern)
+                    let is_dark = (tile.x + tile.y) % 2 == 0;
+                    sprite.color = if is_dark {
+                        Color::srgb(0.8, 0.8, 0.8) // Light gray
+                    } else {
+                        Color::srgb(0.9, 0.9, 0.9) // Lighter gray
+                    };
                 }
-
-                // Reset ownership and appearance
-                tile.owner = None;
-                tile.is_trail = false;
-
-                // Reset to original color (checkerboard pattern)
-                let is_dark = (tile.x + tile.y) % 2 == 0;
-                sprite.color = if is_dark {
-                    Color::srgb(0.8, 0.8, 0.8) // Light gray
-                } else {
-                    Color::srgb(0.9, 0.9, 0.9) // Lighter gray
-                };
             }
         }
 
@@ -96,6 +143,9 @@ pub fn handle_player_death(
             "Player lost {} territory tiles and {} trail tiles.",
             territory_count, trail_count
         );
+
+        // Pause briefly to ensure all tiles are reset
+        // This is just a safety measure and doesn't actually pause execution
 
         // Give player initial territory just like at first spawn
         let territory_radius = 2; // Creates a 5x5 area (2 tiles in each direction from center)
@@ -106,11 +156,21 @@ pub fn handle_player_death(
             let dy = (tile.y - center_tile_y).abs();
 
             if dx <= territory_radius && dy <= territory_radius {
-                // Mark as player territory
-                tile.owner = Some(player_entity);
-                tile.is_trail = false;
-                sprite.color = player_color.with_alpha(0.5);
-                initial_territory_count += 1;
+                // Double check that this tile is NOT still owned
+                // (This is a sanity check that should never fail if the above code works)
+                if tile.owner.is_none() {
+                    // Mark as player territory
+                    tile.owner = Some(player_entity);
+                    tile.is_trail = false;
+                    sprite.color = player_color.with_alpha(0.5);
+                    initial_territory_count += 1;
+                } else {
+                    // Print warning if we find a tile still owned by someone
+                    println!(
+                        "WARNING: Tile at ({}, {}) is still owned during respawn!",
+                        tile.x, tile.y
+                    );
+                }
             }
         }
 
@@ -124,4 +184,7 @@ pub fn handle_player_death(
             initial_territory_count
         );
     }
+
+    // Clear death events to ensure they don't process again
+    death_events.clear();
 }
